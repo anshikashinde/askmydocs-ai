@@ -12,6 +12,8 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
+    sec_user_agent: str = ""
+    sec_timeout_seconds: float = 20.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -22,6 +24,11 @@ class Settings:
             host=os.getenv("APP_HOST", "0.0.0.0"),
             port=int(os.getenv("APP_PORT", "8000")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            sec_user_agent=os.getenv(
+                "SEC_USER_AGENT",
+                os.getenv("ASKMYDOCS_SEC_USER_AGENT", ""),
+            ),
+            sec_timeout_seconds=float(os.getenv("SEC_TIMEOUT_SECONDS", "20")),
         )
 
 

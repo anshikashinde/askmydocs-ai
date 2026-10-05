@@ -8,3 +8,11 @@ class ApplicationError(Exception):
 class DomainError(ApplicationError):
     """Raised for domain-level validation or business-rule violations."""
 
+
+class ResourceNotFoundError(ApplicationError):
+    """Raised when a requested company or filing cannot be found."""
+
+
+class UpstreamServiceError(ApplicationError):
+    """Raised when an external service fails or returns invalid data."""
+
