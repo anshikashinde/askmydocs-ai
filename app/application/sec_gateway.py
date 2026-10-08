@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from app.domain.filings import RawFiling
+from app.domain.filings import FilingReference, RawFiling
 
 
 class SECGatewayError(Exception):
@@ -14,9 +14,14 @@ class SECGateway(Protocol):
 
     def get_submissions(self, cik: str) -> dict[str, Any]: ...
 
-    def download_filing(
+    def build_archive_url(
         self,
         cik: str,
         accession_number: str,
         primary_document: str,
+    ) -> str: ...
+
+    def download_filing(
+        self,
+        filing_reference: FilingReference,
     ) -> RawFiling: ...

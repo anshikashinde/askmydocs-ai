@@ -14,7 +14,9 @@ class SECFilingService:
     def __init__(self, client: SECGateway) -> None:
         self._client = client
 
-    def fetch_latest_filing(self, ticker: str, filing_type: str) -> tuple[FilingReference, RawFiling]:
+    def fetch_latest_filing(
+        self, ticker: str, filing_type: str
+    ) -> tuple[FilingReference, RawFiling]:
         normalized_ticker = ticker.strip().upper()
         normalized_form = filing_type.strip().upper()
         if normalized_form not in SUPPORTED_FILING_TYPES:
@@ -33,33 +35,34 @@ class SECFilingService:
             if submission_cik != cik:
                 raise SECGatewayError("SEC submissions CIK does not match ticker lookup")
             filing = self._find_recent_filing(submissions, normalized_form)
-            raw_filing = self._client.download_filing(
+            source_url = self._client.build_archive_url(
                 cik,
                 filing["accessionNumber"],
                 filing["primaryDocument"],
             )
+            reference = FilingReference(
+                company_name=company_name.strip(),
+                ticker=normalized_ticker,
+                cik=cik,
+                filing_type=normalized_form,
+                filing_date=filing["filingDate"],
+                report_date=_optional_str(filing.get("reportDate")),
+                accession_number=filing["accessionNumber"],
+                primary_document=filing["primaryDocument"],
+                source_url=source_url,
+                primary_document_description=_optional_str(filing.get("primaryDocDescription")),
+                acceptance_datetime=_optional_str(filing.get("acceptanceDateTime")),
+                is_xbrl=_optional_bool(filing.get("isXBRL")),
+                is_inline_xbrl=_optional_bool(filing.get("isInlineXBRL")),
+                size=_optional_int(filing.get("size")),
+                file_number=_optional_str(filing.get("fileNumber")),
+            )
+            raw_filing = self._client.download_filing(reference)
         except ResourceNotFoundError:
             raise
         except SECGatewayError as exc:
             raise UpstreamServiceError(str(exc)) from exc
 
-        reference = FilingReference(
-            company_name=company_name.strip(),
-            ticker=normalized_ticker,
-            cik=cik,
-            filing_type=normalized_form,
-            filing_date=filing["filingDate"],
-            report_date=_optional_str(filing.get("reportDate")),
-            accession_number=filing["accessionNumber"],
-            primary_document=filing["primaryDocument"],
-            source_url=raw_filing.source_url,
-            primary_document_description=_optional_str(filing.get("primaryDocDescription")),
-            acceptance_datetime=_optional_str(filing.get("acceptanceDateTime")),
-            is_xbrl=_optional_bool(filing.get("isXBRL")),
-            is_inline_xbrl=_optional_bool(filing.get("isInlineXBRL")),
-            size=_optional_int(filing.get("size")),
-            file_number=_optional_str(filing.get("fileNumber")),
-        )
         return reference, raw_filing
 
     def _find_ticker(self, ticker: str) -> Mapping[str, Any]:
@@ -82,7 +85,9 @@ class SECFilingService:
             raise SECGatewayError("SEC recent filings are missing accession numbers")
         for field, values in recent.items():
             if isinstance(values, list) and len(values) != len(accessions):
-                raise SECGatewayError(f"SEC recent filing array '{field}' has an inconsistent length")
+                raise SECGatewayError(
+                    f"SEC recent filing array '{field}' has an inconsistent length"
+                )
 
         forms = recent.get("form")
         filing_dates = recent.get("filingDate")
@@ -100,12 +105,13 @@ class SECFilingService:
             accession = accessions[index]
             filing_date = filing_dates[index]
             primary_document = primary_documents[index]
-            if not all(isinstance(value, str) and value for value in (accession, filing_date, primary_document)):
+            if not all(
+                isinstance(value, str) and value
+                for value in (accession, filing_date, primary_document)
+            ):
                 raise SECGatewayError("SEC recent filing is missing required metadata")
             return {
-                field: values[index]
-                for field, values in recent.items()
-                if isinstance(values, list)
+                field: values[index] for field, values in recent.items() if isinstance(values, list)
             }
         raise ResourceNotFoundError(f"No recent {filing_type} filing was found")
 

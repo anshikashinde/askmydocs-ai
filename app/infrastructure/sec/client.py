@@ -3,13 +3,14 @@ from __future__ import annotations
 import re
 import threading
 import time
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
 from app.application.sec_gateway import SECGatewayError
-from app.domain.filings import RawFiling
+from app.domain.filings import FilingReference, RawFiling
 
 COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -57,12 +58,12 @@ class SECClient:
             raise SECClientError("SEC submissions data was not a JSON object")
         return payload
 
-    def download_filing(
+    def build_archive_url(
         self,
         cik: str,
         accession_number: str,
         primary_document: str,
-    ) -> RawFiling:
+    ) -> str:
         if not re.fullmatch(r"\d{10}", cik):
             raise SECClientError("CIK must contain exactly 10 digits")
         accession = accession_number.replace("-", "")
@@ -72,15 +73,27 @@ class SECClient:
             raise SECClientError("Primary document contains invalid characters")
 
         cik_without_zeroes = str(int(cik))
-        source_url = ARCHIVE_URL.format(
+        return ARCHIVE_URL.format(
             cik=cik_without_zeroes,
             accession=accession,
             document=quote(primary_document, safe=""),
         )
+
+    def download_filing(self, filing_reference: FilingReference) -> RawFiling:
+        source_url = self.build_archive_url(
+            filing_reference.cik,
+            filing_reference.accession_number,
+            filing_reference.primary_document,
+        )
+        if source_url != filing_reference.source_url:
+            raise SECClientError("Filing reference source URL does not match SEC archive metadata")
         response = self._get(source_url)
         return RawFiling(
             content=response.content,
             source_url=source_url,
+            filename=filing_reference.primary_document,
+            filing_reference=filing_reference,
+            retrieved_at=datetime.now(UTC),
             content_type=response.headers.get("content-type"),
         )
 

@@ -9,9 +9,7 @@ from app.infrastructure.sec.client import SECClient
 def test_fetch_latest_filing_preserves_raw_content_and_parallel_metadata() -> None:
     requests: list[httpx.Request] = []
     raw_content = b"<html>raw\x00filing</html>"
-    ticker_payload = {
-        "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}
-    }
+    ticker_payload = {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}
     submissions_payload = {
         "cik": 320193,
         "name": "Apple Inc.",
@@ -69,10 +67,15 @@ def test_fetch_latest_filing_preserves_raw_content_and_parallel_metadata() -> No
     assert raw_filing.content == raw_content
     assert raw_filing.content_type == "text/html; charset=utf-8"
     assert len(requests) == 3
-    assert all(request.headers["user-agent"] == "AskMyDocsAI/test contact@example.com" for request in requests)
+    assert all(
+        request.headers["user-agent"] == "AskMyDocsAI/test contact@example.com"
+        for request in requests
+    )
     assert all(request.headers["accept-encoding"] == "gzip, deflate" for request in requests)
     assert "company_tickers.json" in str(requests[0].url)
     assert requests[1].url.path == "/submissions/CIK0000320193.json"
-    assert requests[2].url.path == "/Archives/edgar/data/320193/000032019325000079/aapl-20241228.htm"
+    assert (
+        requests[2].url.path == "/Archives/edgar/data/320193/000032019325000079/aapl-20241228.htm"
+    )
     sec_client.close()
     transport_client.close()

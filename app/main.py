@@ -10,6 +10,7 @@ from app.api.filings import router as filings_router
 from app.api.health import router as health_router
 from app.application.errors import ApplicationError, ResourceNotFoundError, UpstreamServiceError
 from app.config import settings
+from app.infrastructure.parsing.sec_html import SECHTMLParser
 from app.infrastructure.sec.client import SECClient
 from app.logging_config import configure_logging
 
@@ -22,6 +23,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         user_agent=settings.sec_user_agent,
         timeout_seconds=settings.sec_timeout_seconds,
     )
+    application.state.filing_parser = SECHTMLParser()
     yield
     application.state.sec_client.close()
 
