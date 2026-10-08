@@ -43,6 +43,12 @@ class SourceFormat(StrEnum):
     MALFORMED = "malformed"
 
 
+class TableType(StrEnum):
+    LAYOUT = "layout"
+    DATA = "data"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class Provenance:
     filing_id: str
@@ -132,9 +138,11 @@ class Table(DocumentElementBase):
     caption: str | None
     headers: tuple[str, ...]
     rows: tuple[TableRow, ...]
+    table_type: TableType
     element_id: str | None
     document_order: int
     provenance: Provenance
+    parent_table_id: str | None = None
     structure_context: StructureContext | None = None
 
 

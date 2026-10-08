@@ -53,7 +53,7 @@ def test_parses_structured_html_and_retains_raw_source() -> None:
     <h3>Risk Disclosure</h3>
     <p id="risk-text">  Risks   remain <a id="risk-link" href="#footnote-1">1</a>.  </p>
       <table id="financial-table"><caption>Revenue</caption>
-        <tr><th scope="col">Year</th><th scope="col" colspan="1">Revenue</th></tr>
+        <tr><th scope="col">Year</th><th scope="col" colspan="2">Revenue</th></tr>
         <tr><td rowspan="2">2024</td><td id="revenue">100</td></tr>
         <tr><td>90</td></tr>
       </table>
@@ -61,7 +61,10 @@ def test_parses_structured_html_and_retains_raw_source() -> None:
       <div id="footnote-1" class="footnote">Footnote text</div>
       <div id="empty-anchor"></div>
       <span id="page-label">Example Corp | 2025 Form 10-K | 58</span>
-      <hr style="page-break-after:always" />
+    <hr style="page-break-after:always" />
+    <p id="following-page">Following page.</p>
+    <table id="layout-table" role="presentation"><tr><td></td><td></td></tr></table>
+    <table id="unknown-table"><tr><td>Unclassified grid</td></tr></table>
       <script>this must not execute</script>
     </body></html>"""
     raw = make_raw_filing(source)
@@ -75,6 +78,18 @@ def test_parses_structured_html_and_retains_raw_source() -> None:
         isinstance(element, Heading) and element.element_id == "risk-heading"
         for element in structured.elements
     )
+    generated_heading = next(
+        element
+        for element in structured.elements
+        if isinstance(element, Heading) and element.text == "Part I"
+    )
+    assert generated_heading.element_id.startswith("elem-")
+    assert generated_heading.provenance.html_anchor is None
+    assert all(element.element_id for element in structured.elements)
+    second_parse = SECHTMLParser().parse(raw)
+    assert [element.element_id for element in second_parse.elements] == [
+        element.element_id for element in structured.elements
+    ]
     paragraph = next(element for element in structured.elements if isinstance(element, Paragraph))
     assert paragraph.text == "  Risks   remain 1.  "
     assert paragraph.structure_context is not None
@@ -90,8 +105,10 @@ def test_parses_structured_html_and_retains_raw_source() -> None:
         for element in structured.elements
     )
     table = next(element for element in structured.elements if isinstance(element, Table))
+    assert table.table_type.value == "data"
     assert table.caption == "Revenue"
     assert table.headers == ("Year", "Revenue")
+    assert table.rows[0].cells[1].colspan == 2
     assert table.rows[1].cells[0].rowspan == 2
     assert table.rows[2].cells[0].column_index == 1
     lists = [element for element in structured.elements if isinstance(element, ListElement)]
@@ -114,6 +131,24 @@ def test_parses_structured_html_and_retains_raw_source() -> None:
     )
     page_break = next(element for element in structured.elements if isinstance(element, PageBreak))
     assert page_break.page_number == 58
+    following_page = next(
+        element for element in structured.elements if element.element_id == "following-page"
+    )
+    assert following_page.provenance.page_number == 59
+    layout_table = next(
+        element
+        for element in structured.elements
+        if isinstance(element, Table) and element.element_id == "layout-table"
+    )
+    assert layout_table.table_type.value == "layout"
+    assert [len(row.cells) for row in layout_table.rows] == [2]
+    assert [cell.text for cell in layout_table.rows[0].cells] == ["", ""]
+    unknown_table = next(
+        element
+        for element in structured.elements
+        if isinstance(element, Table) and element.element_id == "unknown-table"
+    )
+    assert unknown_table.table_type.value == "unknown"
     assert all(
         "this must not execute" not in getattr(element, "text", "")
         for element in structured.elements
@@ -126,6 +161,39 @@ def test_parses_structured_html_and_retains_raw_source() -> None:
     )
     assert normalize_structured_filing(normalized) == normalized
     assert normalized.raw_filing.content == source
+
+
+def test_nested_tables_remain_separate_and_link_to_parent() -> None:
+    raw = make_raw_filing(
+        b'<html><body><table id="outer"><tr><td>before<table id="inner" role="presentation">'
+        b"<tr><td>nested cell</td></tr></table>after</td></tr></table></body></html>"
+    )
+
+    tables = [
+        element for element in SECHTMLParser().parse(raw).elements if isinstance(element, Table)
+    ]
+
+    assert len(tables) == 2
+    outer = next(table for table in tables if table.element_id == "outer")
+    inner = next(table for table in tables if table.element_id == "inner")
+    assert outer.rows[0].cells[0].text == "beforeafter"
+    assert inner.parent_table_id == outer.element_id
+    assert inner.rows[0].cells[0].text == "nested cell"
+
+
+def test_duplicate_source_ids_get_distinct_internal_ids() -> None:
+    raw = make_raw_filing(
+        b'<html><body><p id="duplicate">First</p><p id="duplicate">Second</p></body></html>'
+    )
+
+    paragraphs = [
+        element for element in SECHTMLParser().parse(raw).elements if isinstance(element, Paragraph)
+    ]
+
+    assert len(paragraphs) == 2
+    assert paragraphs[0].element_id != paragraphs[1].element_id
+    assert all(paragraph.provenance.html_anchor == "duplicate" for paragraph in paragraphs)
+    assert all(paragraph.element_id.startswith("elem-") for paragraph in paragraphs)
 
 
 def test_extracts_xbrl_facts_contexts_units_and_resolves_continuations() -> None:

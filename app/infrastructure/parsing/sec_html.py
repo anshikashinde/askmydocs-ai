@@ -24,6 +24,7 @@ from app.domain.filings import (
     Table,
     TableCell,
     TableRow,
+    TableType,
     ValidationIssue,
     XBRLContext,
     XBRLContinuation,
@@ -31,7 +32,11 @@ from app.domain.filings import (
     XBRLFact,
     XBRLUnit,
 )
-from app.infrastructure.parsing.sec_structure import extract_sec_structure
+from app.infrastructure.parsing.element_identity import ElementIdentityRegistry
+from app.infrastructure.parsing.sec_structure import (
+    extract_sec_structure,
+    propagate_page_numbers,
+)
 
 _IX_FACT_TAGS = {"nonnumeric", "nonfraction"}
 _HTML_ELEMENTS = {"html", "head", "body"}
@@ -57,6 +62,7 @@ class SECHTMLParser:
             raise DocumentParseError("Could not construct a document tree")
 
         root = tree.getroot()
+        identities = ElementIdentityRegistry(root)
         issues: list[ValidationIssue] = []
         if parser_errors:
             issues.append(
@@ -68,18 +74,30 @@ class SECHTMLParser:
 
         document_id = raw_filing.filename
         filing_id = raw_filing.filing_reference.accession_number
-        metadata = _extract_document_metadata(root)
+        metadata = _extract_document_metadata(root, raw_filing)
         elements = extract_sec_structure(
-            _extract_elements(root, raw_filing, filing_id, document_id)
+            _extract_elements(root, raw_filing, filing_id, document_id, identities)
         )
+        elements = propagate_page_numbers(elements)
         facts, contexts, units, continuations, xbrl_issues = _extract_xbrl(
             root,
             raw_filing,
             filing_id,
             document_id,
+            identities,
         )
         issues.extend(xbrl_issues)
-        issues.extend(_validate_representation(elements, facts, contexts, units))
+        issues.extend(
+            _validate_representation(
+                raw_filing,
+                elements,
+                facts,
+                contexts,
+                units,
+                continuations,
+                metadata,
+            )
+        )
 
         return StructuredFiling(
             raw_filing=raw_filing,
@@ -157,8 +175,23 @@ def _parse_tree(
     return root.getroottree(), errors
 
 
-def _extract_document_metadata(root: etree._Element) -> tuple[tuple[str, str], ...]:
-    metadata: list[tuple[str, str]] = []
+def _extract_document_metadata(
+    root: etree._Element,
+    raw_filing: RawFiling,
+) -> tuple[tuple[str, str], ...]:
+    metadata: list[tuple[str, str]] = [
+        ("document_id", raw_filing.filename),
+        ("filename", raw_filing.filename),
+        ("source_url", raw_filing.source_url),
+        ("company_name", raw_filing.filing_reference.company_name),
+        ("ticker", raw_filing.filing_reference.ticker),
+        ("cik", raw_filing.filing_reference.cik),
+        ("accession_number", raw_filing.filing_reference.accession_number),
+        ("filing_type", raw_filing.filing_reference.filing_type),
+        ("filing_date", raw_filing.filing_reference.filing_date),
+    ]
+    if raw_filing.content_type:
+        metadata.append(("content_type", raw_filing.content_type))
     title = next((node for node in root.iter() if _local_name(node) == "title"), None)
     if title is not None:
         metadata.append(("title", _text(title)))
@@ -180,6 +213,7 @@ def _extract_elements(
     raw_filing: RawFiling,
     filing_id: str,
     document_id: str,
+    identities: ElementIdentityRegistry,
 ) -> tuple[DocumentElement, ...]:
     output: list[DocumentElement] = []
     order = 0
@@ -216,15 +250,17 @@ def _extract_elements(
         ):
             continue
 
-        if tag == "table" and not _has_ancestor_tag(node, "table"):
+        if tag == "table":
             order += 1
             element = _extract_table(
-                node, raw_filing, filing_id, document_id, order, structure_context
+                node, raw_filing, filing_id, document_id, order, structure_context, identities
             )
             output.append(element)
             continue
         if tag in {"ul", "ol"}:
-            items = _extract_list_items(node, raw_filing, filing_id, document_id, order + 1)
+            items = _extract_list_items(
+                node, raw_filing, filing_id, document_id, order + 1, identities
+            )
             if items:
                 order += 1
                 parent_item = _nearest_ancestor(node, "li")
@@ -232,10 +268,10 @@ def _extract_elements(
                     ListElement(
                         ordered=tag == "ol",
                         items=items,
-                        element_id=node.get("id"),
+                        element_id=identities.identify(node)[0],
                         document_order=order,
                         provenance=_provenance(
-                            raw_filing, filing_id, document_id, order, node, "list"
+                            raw_filing, filing_id, document_id, order, node, "list", identities
                         ),
                         structure_context=structure_context,
                         parent_item_id=parent_item.get("id") if parent_item is not None else None,
@@ -248,10 +284,10 @@ def _extract_elements(
                 Footnote(
                     text=text,
                     reference_id=_footnote_reference(node),
-                    element_id=node.get("id"),
+                    element_id=identities.identify(node)[0],
                     document_order=order,
                     provenance=_provenance(
-                        raw_filing, filing_id, document_id, order, node, "footnote"
+                        raw_filing, filing_id, document_id, order, node, "footnote", identities
                     ),
                     structure_context=structure_context,
                 )
@@ -263,9 +299,11 @@ def _extract_elements(
                 Link(
                     text=text,
                     href=node.get("href"),
-                    element_id=node.get("id"),
+                    element_id=identities.identify(node)[0],
                     document_order=order,
-                    provenance=_provenance(raw_filing, filing_id, document_id, order, node, "link"),
+                    provenance=_provenance(
+                        raw_filing, filing_id, document_id, order, node, "link", identities
+                    ),
                     structure_context=structure_context,
                 )
             )
@@ -276,10 +314,10 @@ def _extract_elements(
                 OtherStructuredElement(
                     tag="anchor",
                     text="",
-                    element_id=node.get("id"),
+                    element_id=identities.identify(node)[0],
                     document_order=order,
                     provenance=_provenance(
-                        raw_filing, filing_id, document_id, order, node, "anchor"
+                        raw_filing, filing_id, document_id, order, node, "anchor", identities
                     ),
                     structure_context=structure_context,
                 )
@@ -290,10 +328,10 @@ def _extract_elements(
             output.append(
                 PageBreak(
                     page_number=_page_number(node),
-                    element_id=node.get("id"),
+                    element_id=identities.identify(node)[0],
                     document_order=order,
                     provenance=_provenance(
-                        raw_filing, filing_id, document_id, order, node, "page_break"
+                        raw_filing, filing_id, document_id, order, node, "page_break", identities
                     ),
                     structure_context=structure_context,
                 )
@@ -318,9 +356,11 @@ def _extract_elements(
             heading = Heading(
                 text=text,
                 level=level,
-                element_id=node.get("id"),
+                element_id=identities.identify(node)[0],
                 document_order=order,
-                provenance=_provenance(raw_filing, filing_id, document_id, order, node, "heading"),
+                provenance=_provenance(
+                    raw_filing, filing_id, document_id, order, node, "heading", identities
+                ),
                 structure_context=None,
             )
             output.append(heading)
@@ -335,10 +375,10 @@ def _extract_elements(
             output.append(
                 Paragraph(
                     text=text,
-                    element_id=node.get("id"),
+                    element_id=identities.identify(node)[0],
                     document_order=order,
                     provenance=_provenance(
-                        raw_filing, filing_id, document_id, order, node, "paragraph"
+                        raw_filing, filing_id, document_id, order, node, "paragraph", identities
                     ),
                     structure_context=structure_context,
                 )
@@ -350,9 +390,11 @@ def _extract_elements(
                 OtherStructuredElement(
                     tag=tag,
                     text=text,
-                    element_id=node.get("id"),
+                    element_id=identities.identify(node)[0],
                     document_order=order,
-                    provenance=_provenance(raw_filing, filing_id, document_id, order, node, tag),
+                    provenance=_provenance(
+                        raw_filing, filing_id, document_id, order, node, tag, identities
+                    ),
                     structure_context=structure_context,
                 )
             )
@@ -366,16 +408,16 @@ def _extract_table(
     document_id: str,
     order: int,
     structure_context: StructureContext | None,
+    identities: ElementIdentityRegistry,
 ) -> Table:
     caption_node = next((node for node in table_node if _local_name(node) == "caption"), None)
     headers: list[str] = []
     rows: list[TableRow] = []
     occupied: Counter[int] = Counter()
-    for row_index, row_node in enumerate(
-        node for node in table_node.iter() if _local_name(node) == "tr"
-    ):
+    for row_node in (node for node in table_node.iter() if _local_name(node) == "tr"):
         if _nearest_ancestor(row_node, "table") is not table_node:
             continue
+        row_index = len(rows)
         cells: list[TableCell] = []
         column_index = 0
         for cell_node in row_node:
@@ -384,12 +426,12 @@ def _extract_table(
             while occupied[column_index] > 0:
                 occupied[column_index] -= 1
                 column_index += 1
-            cell_text = _text(cell_node)
+            cell_text = _text_excluding_nested_tables(cell_node)
             colspan = _positive_int(cell_node.get("colspan"), 1)
             rowspan = _positive_int(cell_node.get("rowspan"), 1)
             role = cell_node.get("scope")
             if _local_name(cell_node) == "th" and role is None:
-                role = "column" if row_index == 0 else "row"
+                role = "header"
             cell = TableCell(
                 text=cell_text,
                 row_index=row_index,
@@ -397,7 +439,7 @@ def _extract_table(
                 colspan=colspan,
                 rowspan=rowspan,
                 header_role=role,
-                element_id=cell_node.get("id"),
+                element_id=identities.identify(cell_node)[0],
                 provenance=_provenance(
                     raw_filing,
                     filing_id,
@@ -405,6 +447,7 @@ def _extract_table(
                     order,
                     cell_node,
                     "table_header_cell" if _local_name(cell_node) == "th" else "table_cell",
+                    identities,
                 ),
             )
             cells.append(cell)
@@ -418,19 +461,32 @@ def _extract_table(
             TableRow(
                 cells=tuple(cells),
                 row_index=row_index,
-                element_id=row_node.get("id"),
+                element_id=identities.identify(row_node)[0],
                 provenance=_provenance(
-                    raw_filing, filing_id, document_id, order, row_node, "table_row"
+                    raw_filing, filing_id, document_id, order, row_node, "table_row", identities
                 ),
             )
         )
+    table_role = (table_node.get("role") or "").lower()
+    has_xbrl_facts = any(_local_name(node) in _IX_FACT_TAGS for node in table_node.iter())
+    if table_role in {"presentation", "none"}:
+        table_type = TableType.LAYOUT
+    elif caption_node is not None or headers or table_node.get("aria-label") or has_xbrl_facts:
+        table_type = TableType.DATA
+    else:
+        table_type = TableType.UNKNOWN
+    parent_table = _nearest_ancestor(table_node, "table")
     return Table(
         caption=_text(caption_node) if caption_node is not None else None,
         headers=tuple(headers),
         rows=tuple(rows),
-        element_id=table_node.get("id"),
+        table_type=table_type,
+        element_id=identities.identify(table_node)[0],
         document_order=order,
-        provenance=_provenance(raw_filing, filing_id, document_id, order, table_node, "table"),
+        provenance=_provenance(
+            raw_filing, filing_id, document_id, order, table_node, "table", identities
+        ),
+        parent_table_id=identities.identify(parent_table)[0] if parent_table is not None else None,
         structure_context=structure_context,
     )
 
@@ -441,6 +497,7 @@ def _extract_list_items(
     filing_id: str,
     document_id: str,
     order: int,
+    identities: ElementIdentityRegistry,
 ) -> tuple[ListItem, ...]:
     result: list[ListItem] = []
     for item in (node for node in list_node.iter() if _local_name(node) == "li"):
@@ -450,9 +507,9 @@ def _extract_list_items(
             ListItem(
                 text=_text_excluding_lists(item),
                 position=len(result) + 1,
-                element_id=item.get("id"),
+                element_id=identities.identify(item)[0],
                 provenance=_provenance(
-                    raw_filing, filing_id, document_id, order, item, "list_item"
+                    raw_filing, filing_id, document_id, order, item, "list_item", identities
                 ),
             )
         )
@@ -473,11 +530,26 @@ def _text_excluding_lists(node: etree._Element) -> str:
     return "".join(parts)
 
 
+def _text_excluding_nested_tables(node: etree._Element) -> str:
+    parts: list[str] = []
+    for child in node.iter():
+        if child is not node and _inside(child, {"table"}):
+            if child.tail:
+                parts.append(child.tail)
+            continue
+        if child.text:
+            parts.append(child.text)
+        if child.tail:
+            parts.append(child.tail)
+    return "".join(parts)
+
+
 def _extract_xbrl(
     root: etree._Element,
     raw_filing: RawFiling,
     filing_id: str,
     document_id: str,
+    identities: ElementIdentityRegistry,
 ) -> tuple[
     tuple[XBRLFact, ...],
     tuple[XBRLContext, ...],
@@ -498,10 +570,12 @@ def _extract_xbrl(
         tag = _local_name(node)
         if tag == "context":
             order += 1
-            contexts.append(_parse_context(node, raw_filing, filing_id, document_id, order))
+            contexts.append(
+                _parse_context(node, raw_filing, filing_id, document_id, order, identities)
+            )
         elif tag == "unit":
             order += 1
-            units.append(_parse_unit(node, raw_filing, filing_id, document_id, order))
+            units.append(_parse_unit(node, raw_filing, filing_id, document_id, order, identities))
         elif tag == "continuation":
             continuation_nodes.append(node)
         elif tag in _IX_FACT_TAGS:
@@ -538,6 +612,7 @@ def _extract_xbrl(
                     order,
                     node,
                     "xbrl_continuation",
+                    identities,
                 ),
             )
         )
@@ -581,7 +656,7 @@ def _extract_xbrl(
         attrs = tuple(sorted((_attribute_name(key), value) for key, value in node.attrib.items()))
         facts.append(
             XBRLFact(
-                fact_id=node.get("id"),
+                fact_id=identities.identify(node)[0],
                 name=_attribute(node, "name"),
                 value=value,
                 resolved_value=value + "".join(continuation_text),
@@ -597,7 +672,7 @@ def _extract_xbrl(
                 continuation_ids=tuple(continuation_ids),
                 attributes=attrs,
                 normalized_value=None,
-                source_element_id=node.get("id"),
+                source_element_id=identities.identify(node)[0],
                 provenance=_provenance(
                     raw_filing,
                     filing_id,
@@ -605,6 +680,7 @@ def _extract_xbrl(
                     order,
                     node,
                     f"ix:{_local_name(node)}",
+                    identities,
                 ),
             )
         )
@@ -630,6 +706,7 @@ def _parse_context(
     filing_id: str,
     document_id: str,
     order: int,
+    identities: ElementIdentityRegistry,
 ) -> XBRLContext:
     entity = _first_descendant(node, "identifier")
     instant = _first_descendant(node, "instant")
@@ -645,13 +722,15 @@ def _parse_context(
         if _local_name(member) in {"explicitmember", "typedmember"}
     )
     return XBRLContext(
-        context_id=node.get("id", ""),
+        context_id=node.get("id") or identities.identify(node)[0],
         entity_identifier=_text(entity) if entity is not None else None,
         period_instant=_text(instant) if instant is not None else None,
         period_start=_text(start_date) if start_date is not None else None,
         period_end=_text(end_date) if end_date is not None else None,
         dimensions=dimensions,
-        provenance=_provenance(raw_filing, filing_id, document_id, order, node, "xbrl_context"),
+        provenance=_provenance(
+            raw_filing, filing_id, document_id, order, node, "xbrl_context", identities
+        ),
     )
 
 
@@ -661,53 +740,257 @@ def _parse_unit(
     filing_id: str,
     document_id: str,
     order: int,
+    identities: ElementIdentityRegistry,
 ) -> XBRLUnit:
     return XBRLUnit(
-        unit_id=node.get("id", ""),
+        unit_id=node.get("id") or identities.identify(node)[0],
         measures=tuple(
             _text(measure) for measure in node.iter() if _local_name(measure) == "measure"
         ),
-        provenance=_provenance(raw_filing, filing_id, document_id, order, node, "xbrl_unit"),
+        provenance=_provenance(
+            raw_filing, filing_id, document_id, order, node, "xbrl_unit", identities
+        ),
     )
 
 
 def _validate_representation(
+    raw_filing: RawFiling,
     elements: tuple[DocumentElement, ...],
     facts: tuple[XBRLFact, ...],
     contexts: tuple[XBRLContext, ...],
     units: tuple[XBRLUnit, ...],
+    continuations: tuple[XBRLContinuation, ...],
+    metadata: tuple[tuple[str, str], ...],
 ) -> tuple[ValidationIssue, ...]:
     issues: list[ValidationIssue] = []
+    metadata_keys = {key for key, _ in metadata}
+    if not metadata_keys or "document_id" not in metadata_keys:
+        issues.append(
+            _validation_issue("missing_document_metadata", "Document metadata is missing")
+        )
+    if not raw_filing.content or not raw_filing.source_url or not raw_filing.filename:
+        issues.append(
+            _validation_issue("invalid_source_document", "Source document metadata is incomplete")
+        )
+
+    seen_element_ids: set[str] = set()
+    seen_orders: set[int] = set()
+    expected_order = 1
     for element in elements:
-        if element.provenance.document_order != element.document_order:
+        if element.document_order != expected_order or element.document_order in seen_orders:
             issues.append(
-                ValidationIssue(
-                    code="provenance_order_mismatch",
-                    message="Element order does not match its provenance order",
-                    severity="error",
-                    element_id=element.element_id,
+                _validation_issue(
+                    "invalid_document_order",
+                    "Elements must have unique, contiguous document order",
+                    element.element_id,
                 )
             )
+        expected_order += 1
+        seen_orders.add(element.document_order)
+        nested: list[tuple[str | None, Provenance]] = [(element.element_id, element.provenance)]
+        if isinstance(element, Table):
+            if element.table_type not in set(TableType):
+                issues.append(
+                    _validation_issue(
+                        "invalid_table_type", "Table type is not recognized", element.element_id
+                    )
+                )
+            for expected_row_index, row in enumerate(element.rows):
+                nested.append((row.element_id, row.provenance))
+                if row.row_index != expected_row_index:
+                    issues.append(
+                        _validation_issue(
+                            "invalid_table_row_index",
+                            "Table row indexes are inconsistent",
+                            row.element_id,
+                        )
+                    )
+                previous_column_end = 0
+                for cell in row.cells:
+                    nested.append((cell.element_id, cell.provenance))
+                    if cell.row_index != row.row_index or cell.column_index < previous_column_end:
+                        issues.append(
+                            _validation_issue(
+                                "invalid_table_cell_index",
+                                "Table cell indexes are inconsistent",
+                                cell.element_id,
+                            )
+                        )
+                    if cell.rowspan < 1 or cell.colspan < 1:
+                        issues.append(
+                            _validation_issue(
+                                "invalid_table_span",
+                                "Table spans must be positive",
+                                cell.element_id,
+                            )
+                        )
+                    previous_column_end = cell.column_index + cell.colspan
+        elif isinstance(element, ListElement):
+            nested.extend((item.element_id, item.provenance) for item in element.items)
+
+        for element_id, provenance in nested:
+            if not element_id:
+                issues.append(
+                    _validation_issue(
+                        "missing_element_id", "Meaningful elements require an element ID"
+                    )
+                )
+            elif element_id in seen_element_ids:
+                issues.append(
+                    _validation_issue(
+                        "duplicate_element_id", "Element IDs must be unique", element_id
+                    )
+                )
+            else:
+                seen_element_ids.add(element_id)
+            if provenance.element_id != element_id:
+                issues.append(
+                    _validation_issue(
+                        "provenance_element_mismatch",
+                        "Provenance element ID does not match its element",
+                        element_id,
+                    )
+                )
+            if provenance.filing_id != raw_filing.filing_reference.accession_number:
+                issues.append(
+                    _validation_issue(
+                        "provenance_filing_mismatch",
+                        "Provenance filing ID is inconsistent",
+                        element_id,
+                    )
+                )
+            if provenance.document_id != raw_filing.filename:
+                issues.append(
+                    _validation_issue(
+                        "provenance_document_mismatch",
+                        "Provenance document ID is inconsistent",
+                        element_id,
+                    )
+                )
+            if provenance.source_url != raw_filing.source_url:
+                issues.append(
+                    _validation_issue(
+                        "provenance_source_mismatch",
+                        "Provenance source URL is inconsistent",
+                        element_id,
+                    )
+                )
+            if provenance.document_order != element.document_order:
+                issues.append(
+                    _validation_issue(
+                        "provenance_order_mismatch",
+                        "Provenance order does not match element order",
+                        element_id,
+                    )
+                )
+
     context_ids = {context.context_id for context in contexts}
     unit_ids = {unit.unit_id for unit in units}
+    fact_ids = [fact.fact_id for fact in facts if fact.fact_id]
+    if len(fact_ids) != len(set(fact_ids)):
+        issues.append(_validation_issue("duplicate_xbrl_fact_id", "XBRL fact IDs must be unique"))
+    context_list = [context.context_id for context in contexts if context.context_id]
+    if len(context_list) != len(set(context_list)):
+        issues.append(
+            _validation_issue("duplicate_xbrl_context_id", "XBRL context IDs must be unique")
+        )
+    unit_list = [unit.unit_id for unit in units if unit.unit_id]
+    if len(unit_list) != len(set(unit_list)):
+        issues.append(_validation_issue("duplicate_xbrl_unit_id", "XBRL unit IDs must be unique"))
+    continuation_ids = [item.continuation_id for item in continuations if item.continuation_id]
+    if len(continuation_ids) != len(set(continuation_ids)):
+        issues.append(
+            _validation_issue("duplicate_continuation_id", "XBRL continuation IDs must be unique")
+        )
+    continuation_id_set = set(continuation_ids)
     for fact in facts:
         if fact.context_ref and fact.context_ref not in context_ids:
             issues.append(
-                ValidationIssue(
-                    code="missing_xbrl_context",
-                    message=f"Fact references missing XBRL context {fact.context_ref}",
-                    element_id=fact.fact_id,
+                _validation_issue(
+                    "missing_xbrl_context",
+                    f"Fact references missing XBRL context {fact.context_ref}",
+                    fact.fact_id,
                 )
             )
         if fact.unit_ref and fact.unit_ref not in unit_ids:
             issues.append(
-                ValidationIssue(
-                    code="missing_xbrl_unit",
-                    message=f"Fact references missing XBRL unit {fact.unit_ref}",
-                    element_id=fact.fact_id,
+                _validation_issue(
+                    "missing_xbrl_unit",
+                    f"Fact references missing XBRL unit {fact.unit_ref}",
+                    fact.fact_id,
+                )
+            )
+        if fact.source_element_id != fact.provenance.element_id:
+            issues.append(
+                _validation_issue(
+                    "invalid_xbrl_source_element",
+                    "XBRL fact source element ID is inconsistent",
+                    fact.fact_id,
+                )
+            )
+        if fact.continued_at and fact.continued_at not in continuation_id_set:
+            issues.append(
+                _validation_issue(
+                    "missing_xbrl_continuation",
+                    f"Fact references missing continuation {fact.continued_at}",
+                    fact.fact_id,
+                )
+            )
+        for continuation_id in fact.continuation_ids:
+            if continuation_id not in continuation_id_set:
+                issues.append(
+                    _validation_issue(
+                        "missing_xbrl_continuation",
+                        f"Fact references missing continuation {continuation_id}",
+                        fact.fact_id,
+                    )
+                )
+    for continuation in continuations:
+        if continuation.continued_at and continuation.continued_at not in continuation_id_set:
+            issues.append(
+                _validation_issue(
+                    "missing_xbrl_continuation",
+                    f"Continuation references missing continuation {continuation.continued_at}",
+                    continuation.source_element_id,
+                )
+            )
+        if continuation.source_element_id != continuation.provenance.element_id:
+            issues.append(
+                _validation_issue(
+                    "invalid_xbrl_source_element",
+                    "XBRL continuation source element ID is inconsistent",
+                    continuation.source_element_id,
+                )
+            )
+    xbrl_values: tuple[XBRLContext | XBRLUnit | XBRLContinuation | XBRLFact, ...] = (
+        *contexts,
+        *units,
+        *continuations,
+        *facts,
+    )
+    for value in xbrl_values:
+        provenance = value.provenance
+        if (
+            provenance.filing_id != raw_filing.filing_reference.accession_number
+            or provenance.document_id != raw_filing.filename
+            or provenance.source_url != raw_filing.source_url
+        ):
+            issues.append(
+                _validation_issue(
+                    "invalid_xbrl_provenance",
+                    "XBRL provenance does not match the source filing",
+                    provenance.element_id,
                 )
             )
     return tuple(issues)
+
+
+def _validation_issue(
+    code: str,
+    message: str,
+    element_id: str | None = None,
+) -> ValidationIssue:
+    return ValidationIssue(code=code, message=message, severity="error", element_id=element_id)
 
 
 def _provenance(
@@ -717,8 +1000,10 @@ def _provenance(
     order: int,
     node: etree._Element,
     source_element_type: str,
+    identities: ElementIdentityRegistry,
 ) -> Provenance:
-    element_id = node.get("id")
+    element_id, html_anchor = identities.identify(node)
+    # lxml's recovered tree cannot reliably map nodes to source byte ranges; keep offsets unset.
     return Provenance(
         filing_id=filing_id,
         document_id=document_id,
@@ -727,7 +1012,7 @@ def _provenance(
         document_order=order,
         start_offset=None,
         end_offset=None,
-        html_anchor=element_id,
+        html_anchor=html_anchor,
         page_number=_page_number(node),
         source_element_type=source_element_type,
     )
