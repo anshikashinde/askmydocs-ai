@@ -45,5 +45,17 @@ class XBRLContinuationError(XBRLParsingError):
     """Raised when a continuation chain cannot be resolved safely."""
 
 
+class ChunkingError(FilingProcessingError):
+    """Raised when a structured filing cannot be chunked without data loss."""
+
+
+class IndexPersistenceError(FilingProcessingError):
+    """Raised when a prepared chunk index cannot be stored consistently."""
+
+
+class EmbeddingError(FilingProcessingError):
+    """Raised when embedding output is incomplete or invalid."""
+
+
 class ValidationError(FilingProcessingError):
     """Raised when a structured filing violates required invariants."""

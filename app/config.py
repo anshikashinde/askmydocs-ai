@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from app.application.chunking_config import ChunkingSettings
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -14,6 +16,7 @@ class Settings:
     log_level: str = "INFO"
     sec_user_agent: str = ""
     sec_timeout_seconds: float = 20.0
+    chunking: ChunkingSettings = ChunkingSettings()
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -29,6 +32,14 @@ class Settings:
                 os.getenv("ASKMYDOCS_SEC_USER_AGENT", ""),
             ),
             sec_timeout_seconds=float(os.getenv("SEC_TIMEOUT_SECONDS", "20")),
+            chunking=ChunkingSettings(
+                target_chunk_tokens=int(os.getenv("TARGET_CHUNK_TOKENS", "800")),
+                max_chunk_tokens=int(os.getenv("MAX_CHUNK_TOKENS", "1000")),
+                min_chunk_tokens=int(os.getenv("MIN_CHUNK_TOKENS", "100")),
+                overlap_tokens=int(os.getenv("OVERLAP_TOKENS", "100")),
+                chunking_version=os.getenv("CHUNKING_VERSION", "1"),
+                tokenizer_encoding=os.getenv("TOKENIZER_ENCODING", "cl100k_base"),
+            ),
         )
 
 
