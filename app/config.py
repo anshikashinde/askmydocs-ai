@@ -19,6 +19,13 @@ class Settings:
     embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_cache_dir: str = ""
     vector_index_directory: str = ".data/vector-index"
+    generation_model_name: str = "fake-model"
+    generation_max_new_tokens: int = 250
+    generation_temperature: float = 0.0
+    rag_top_k: int = 5
+    rag_min_relevance_score: float = 0.1
+    rag_prompt_version: str = "rag_answer_v1"
+    rag_max_context_tokens: int | None = None
     chunking: ChunkingSettings = ChunkingSettings()
 
     @classmethod
@@ -41,6 +48,17 @@ class Settings:
             ),
             embedding_cache_dir=os.getenv("EMBEDDING_CACHE_DIR", ""),
             vector_index_directory=os.getenv("VECTOR_INDEX_DIRECTORY", ".data/vector-index"),
+            generation_model_name=os.getenv("GENERATION_MODEL_NAME", "fake-model"),
+            generation_max_new_tokens=int(os.getenv("GENERATION_MAX_NEW_TOKENS", "250")),
+            generation_temperature=float(os.getenv("GENERATION_TEMPERATURE", "0.0")),
+            rag_top_k=int(os.getenv("RAG_TOP_K", "5")),
+            rag_min_relevance_score=float(os.getenv("RAG_MIN_RELEVANCE_SCORE", "0.1")),
+            rag_prompt_version=os.getenv("RAG_PROMPT_VERSION", "rag_answer_v1"),
+            rag_max_context_tokens=(
+                int(os.getenv("RAG_MAX_CONTEXT_TOKENS"))
+                if os.getenv("RAG_MAX_CONTEXT_TOKENS") is not None
+                else None
+            ),
             chunking=ChunkingSettings(
                 target_chunk_tokens=int(os.getenv("TARGET_CHUNK_TOKENS", "800")),
                 max_chunk_tokens=int(os.getenv("MAX_CHUNK_TOKENS", "1000")),
