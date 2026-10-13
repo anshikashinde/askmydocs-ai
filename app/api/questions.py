@@ -6,6 +6,9 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.application.chunking import StructuredFilingChunker
+from app.application.chunking_config import ChunkingSettings
+from app.application.ingestion import FilingIngestionService
 from app.application.question_answer import (
     DenseRetrievalService,
     LocalGenerationProvider,
@@ -13,8 +16,13 @@ from app.application.question_answer import (
     QueryUnderstandingService,
     QuestionAnswerService,
 )
+from app.application.sec_filings import SECFilingService
+from app.application.structured_filings import FilingDocumentProcessingService
 from app.config import settings
+from app.infrastructure.bm25 import BM25TextRepresentationBuilder
 from app.infrastructure.embeddings import SentenceTransformerEmbeddingProvider
+from app.infrastructure.file_chunk_index import FileSystemChunkIndexRepository
+from app.infrastructure.tokenization import TiktokenTokenizer
 from app.infrastructure.vector_index import LocalVectorIndex
 
 router = APIRouter(tags=["questions"])
@@ -23,6 +31,52 @@ router = APIRouter(tags=["questions"])
 @dataclass(frozen=True)
 class QuestionRequest:
     question: str
+
+
+def _ensure_filing_is_indexed(
+    *,
+    question: str,
+    request: Request,
+    embedding_provider: SentenceTransformerEmbeddingProvider,
+    vector_index: LocalVectorIndex,
+) -> None:
+    parser = QueryUnderstandingService()
+    parsed = parser.parse_question(question)
+    ticker = parsed.ticker or {
+        "apple": "AAPL",
+        "microsoft": "MSFT",
+        "amazon": "AMZN",
+        "nvidia": "NVDA",
+        "alphabet": "GOOG",
+        "meta": "META",
+        "tesla": "TSLA",
+    }.get((parsed.company_name or "").lower())
+    filing_type = parsed.filing_type or "10-K"
+    if ticker is None:
+        return
+    if vector_index.document_count > 0:
+        return
+
+    sec_service = SECFilingService(request.app.state.sec_client)
+    structured = FilingDocumentProcessingService(
+        sec_service,
+        request.app.state.filing_parser,
+    ).fetch_and_parse(ticker, filing_type)
+    chunking = StructuredFilingChunker(
+        settings.chunking,
+        TiktokenTokenizer(settings.chunking.tokenizer_encoding),
+    )
+    ingestion = FilingIngestionService(
+        filing_service=sec_service,
+        parser=request.app.state.filing_parser,
+        chunker=chunking,
+        bm25_builder=BM25TextRepresentationBuilder(),
+        index_repository=FileSystemChunkIndexRepository(Path(settings.vector_index_directory)),
+        embedding_provider=embedding_provider,
+        vector_index=vector_index,
+        storage_directory=settings.vector_index_directory,
+    )
+    ingestion.ingest_filing(structured)
 
 
 @router.post("/questions")
@@ -41,6 +95,13 @@ def ask_question(payload: QuestionRequest, request: Request) -> JSONResponse:
         )
         request.app.state.embedding_provider = embedding_provider
         request.app.state.vector_index = vector_index
+
+    _ensure_filing_is_indexed(
+        question=payload.question,
+        request=request,
+        embedding_provider=embedding_provider,
+        vector_index=vector_index,
+    )
 
     service = QuestionAnswerService(
         question_parser=QueryUnderstandingService(),

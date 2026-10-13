@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
@@ -31,9 +33,14 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         model_name=settings.embedding_model_name,
         cache_dir=settings.embedding_cache_dir,
     )
-    vector_index = LocalVectorIndex(
-        model_name=settings.embedding_model_name,
-        directory=settings.vector_index_directory,
+    index_path = Path(settings.vector_index_directory) / "vector-index.json"
+    vector_index = (
+        LocalVectorIndex.load(index_path, model_name=settings.embedding_model_name)
+        if index_path.exists()
+        else LocalVectorIndex(
+            model_name=settings.embedding_model_name,
+            directory=settings.vector_index_directory,
+        )
     )
     application.state.embedding_provider = embedding_provider
     application.state.vector_index = vector_index

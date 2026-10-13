@@ -38,7 +38,7 @@ class GenerationProvider(Protocol):
 class RetrievalProvider(Protocol):
     def search(
         self, question: str, *, filing_scope: str | None = None
-    ) -> Sequence[dict[str, Any]]: ...
+    ) -> Sequence[Any]: ...
 
 
 @dataclass(frozen=True)
@@ -134,7 +134,7 @@ class QueryUnderstandingService:
         if match:
             return f"FY{match.group(1)}"
         match = re.search(r"\b(20\d{2})\b", text)
-        if match and "10-K" in text.upper() or "10-Q" in text.upper():
+        if match and ("10-K" in text.upper() or "10-Q" in text.upper()):
             return f"FY{match.group(1)}"
         return None
 

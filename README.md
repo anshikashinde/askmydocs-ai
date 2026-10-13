@@ -1,97 +1,70 @@
 # AskMyDocs AI
 
-AskMyDocs AI is a foundation-stage, evidence-grounded Retrieval-Augmented Generation (RAG) system for analyzing public-company SEC filings. The project is currently in Phase 0, which focuses on the engineering foundation and repository readiness required before later RAG and retrieval work begins.
+AskMyDocs AI is a document intelligence and question-answering project for SEC filings. It ingests public-company filing data, structures the content into canonical chunks, indexes the content for retrieval, and supports grounded question answering over those filings with citations back to the original source material.
 
-## Current project status
+## What the project does
 
-This repository has the required project structure and implements the minimum viable foundation:
+- Fetches SEC filing metadata and source documents for public companies
+- Parses structured filing content into a normalized document model
+- Splits filings into chunked, provenance-aware sections for downstream retrieval
+- Builds embeddings and stores them in a local vector index
+- Resolves questions about a filing to relevant evidence in the index
+- Answers using the retrieved evidence and returns citation-backed responses
+- Provides a FastAPI-based application interface for filing and question workflows
 
-- Python packaging and dependency configuration
-- FastAPI application entry point
-- minimal health endpoint at `/health`
-- environment-based configuration
-- basic logging setup
-- test harness with pytest
-- Ruff and mypy configuration
-- Docker build and runtime wiring
-- GitHub Actions CI checks
+## Architecture
 
-No SEC ingestion, retrieval, reranking, or generation logic is implemented in this phase.
+The project follows a modular monolith with clear separation between:
 
-## High-level architecture
+- presentation/API layer
+- application orchestration and use cases
+- domain models and business rules
+- infrastructure adapters for SEC access, parsing, indexing, and embeddings
 
-The system follows a modular monolith with Clean Architecture boundaries:
+## Repository structure
 
-- Presentation: API surface and future UI
-- Application: orchestration and use cases
-- Domain: business concepts and rules
-- Infrastructure: adapters for external systems
+- [app](app) — application, domain, and infrastructure code
+- [docs](docs) — architecture and product documentation
+- [prompts](prompts) — prompt templates for grounding and answer generation
+- [tests](tests) — unit and integration tests
+- [docker](docker) — container setup and runtime assets
 
-This aligns with the project architecture described in [docs/architecture.md](docs/architecture.md).
-
-## Documentation
-
-- [docs/product.md](docs/product.md)
-- [docs/architecture.md](docs/architecture.md)
-- [docs/phases.md](docs/phases.md)
-
-## Environment setup
+## Running locally
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .[dev]
-cp .env.example .env
 ```
 
-The repository includes a minimal environment example in [.env.example](.env.example). Keep a real `.env` file local only and never commit secrets.
-
-## Run the application
+Start the app:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Then verify the health endpoint:
+Check the health endpoint:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-## Run tests
+Run tests:
 
 ```bash
 pytest
 ```
 
-## Run Ruff
+Run lint and type checks:
 
 ```bash
 ruff check .
-```
-
-## Run mypy
-
-```bash
 mypy app
 ```
-
-## Run with Docker
-
-```bash
-docker build -t askmydocs-ai .
-docker run --rm -p 8000:8000 askmydocs-ai
-```
-
-Or use Docker Compose:
-
-```bash
-docker compose up --build
-```
-
-The service exposes the health endpoint at `/health`.
 
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
+Current phase: Phase 2 baseline RAG implementation.
