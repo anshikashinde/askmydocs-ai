@@ -7,7 +7,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.application.chunking import StructuredFilingChunker
-from app.application.chunking_config import ChunkingSettings
 from app.application.ingestion import FilingIngestionService
 from app.application.question_answer import (
     DenseRetrievalService,
